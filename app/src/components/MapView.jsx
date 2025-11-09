@@ -2,12 +2,29 @@ import React, {useEffect, useRef} from 'react'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css';
 
+// Ensure this token is correctly set in your environment variables
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN || 'YOUR_MAPBOX_TOKEN_HERE'
 
 const initialCenter = [-73.985130, 40.758896]
 const initialZoom = 12.2
 
-/** ---------- Heatmap styling (reapplied after any style change) ---------- */
+// Convert backend path array [[lat, lon], ...] to GeoJSON LineString
+function pathArrayToGeoJSON(path) {
+    if (!Array.isArray(path) || path.length < 2) {
+        return undefined;
+    }
+    // IMPORTANT: Backend format is [lat, lon]; GeoJSON LineString requires [lon, lat]
+    const coordinates = path.map(([lat, lon]) => [+lon, +lat]);
+    return {
+        type: 'Feature',
+        geometry: {
+            type: 'LineString',
+            coordinates: coordinates
+        }
+    };
+}
+
+/** ---------- Heatmap data loading and styling ---------- */
 const HEAT_LAYER_ID = 'risk-heat'
 const HEAT_SOURCE_ID = 'risk-points'
 
@@ -18,7 +35,7 @@ let __HEAT_LAST_ZBUCKET = null;  // remember last zoom bucket we rendered
 
 // Decide spacing (meters) based on zoom
 const spacingForZoom = (zoom) => {
-    console.log(zoom);
+    // console.log(zoom);
     if (zoom >= 16) return 8;     // ~10 m
     if (zoom >= 15) return 30;     // ~20 m
     if (zoom >= 14) return 60;     // ~20 m
@@ -138,13 +155,6 @@ let __HEAT_GEO_LOADING = (async () => {
     __HEAT_RAW_CACHE = [];
     return __HEAT_RAW_CACHE;
 });
-
-/**
- * Convert backend **lines** to a dense cloud of **points** for Mapbox heatmap.
- * Backend item: { from:[lat,lon], to:[lat,lon], risk_score:[0..1] }
- * Output: FeatureCollection of Point features ([lon,lat]), sampled per zoom.
- */
-
 
 // Strong, explicit heat style so it never “disappears” after style switches
 const HEAT_PAINT = {
@@ -473,6 +483,8 @@ export default function MapView() {
 
     useEffect(() => {
         if (mapRef.current) return
+
+        // This initialization may fail if VITE_MAPBOX_TOKEN is missing or invalid
         const map = new mapboxgl.Map({
             container: mapEl.current,
             style: 'mapbox://styles/mapbox/streets-v12',
@@ -482,6 +494,37 @@ export default function MapView() {
         mapRef.current = map
         // Remember initial heat state (default is false)
         map.__heatOn = heatRef.current
+
+        // Expose map instance globally for Sidebar to access bounds
+        window.__ss_map = map;
+
+        // --- NEW: Expose API for drawing backend routes (lists of [lat, lon]) ---
+        // This is the function that is called from Sidebar.js
+        window.__drawRoutesFromBackend = (data) => {
+            console.log('Backend Data Received:', data); // LOG 1: Raw data from server
+            if (!data) return
+            // Map shortest_path to 'fastest', safest_path to 'safest', etc.
+            const { shortest_path, safest_path, weighted_path, active } = data
+
+            // pathArrayToGeoJSON expects paths in the backend format: [[lat, lon], ...]
+            const fastestGeoJSON = shortest_path ? pathArrayToGeoJSON(shortest_path) : undefined;
+            const safestGeoJSON = safest_path ? pathArrayToGeoJSON(safest_path) : undefined;
+            const weightedGeoJSON = weighted_path ? pathArrayToGeoJSON(weighted_path) : undefined;
+
+            const eventDetail = {
+                // Converted GeoJSON objects
+                fastest: fastestGeoJSON,
+                safest: safestGeoJSON,
+                weighted: weightedGeoJSON,
+                active: active || 'weighted' // Default to weighted if no active is specified
+            }
+
+            console.log('GeoJSON Dispatched:', eventDetail); // LOG 2: Converted data
+
+            // This dispatch triggers the existing onDrawRoutes handler in the second useEffect
+            window.dispatchEvent(new CustomEvent('app:draw-routes', { detail: eventDetail }))
+        }
+        // --------------------------------------------------------------------------
 
         // FIX: Disable rotation controls on map initialization (for default mode)
         map.dragRotate.disable();
@@ -542,6 +585,9 @@ export default function MapView() {
         return () => {
             map.off('zoomend', onZoomEnd);
             map.remove();
+            // --- NEW: Cleanup the global function ---
+            delete window.__drawRoutesFromBackend;
+            delete window.__ss_map;
         }
     }, [])
 
@@ -573,7 +619,7 @@ export default function MapView() {
             if (heatRef.current) resampleHeatIfNeeded(m);
         }
 
-        // Route drawing (unchanged)
+        // Route drawing (triggered by app:draw-routes from __drawRoutesFromBackend)
         const onDrawRoutes = (e) => {
             const m = map();
             if (!m) return
@@ -637,6 +683,7 @@ export default function MapView() {
                 const b = computeBounds(lines);
                 if (b) {
                     try {
+                        // The fitBounds for routes is usually more zoomed in than the start/end points alone
                         m.fitBounds(b, {padding: 60, maxZoom: 16, duration: 500});
                     } catch (_) {
                     }
@@ -652,9 +699,43 @@ export default function MapView() {
             }
         }
 
+        // NEW: Event handler to fit both the origin and destination points
+        const onFitRoutePoints = (e) => {
+            const m = map();
+            if (!m) return
+            const d = e.detail || {};
+            const { origin, destination } = d; // {lng, lat} objects
+
+            if (!origin || !destination) return;
+
+            // Mapbox requires [[west, south], [east, north]] coordinates
+            // Longitude (lng) is X, Latitude (lat) is Y
+            const coords = [
+                [origin.lng, origin.lat],
+                [destination.lng, destination.lat]
+            ];
+
+            // Create a LngLatBounds object from the coordinates
+            const bounds = coords.reduce((bounds, coord) => {
+                return bounds.extend(coord);
+            }, new mapboxgl.LngLatBounds(coords[0], coords[0]));
+
+            try {
+                m.fitBounds(bounds, {
+                    padding: 80, // Add some margin around the points
+                    duration: 1000,
+                    maxZoom: 14 // Don't zoom in too close
+                });
+            } catch (error) {
+                console.error("Failed to fit bounds to route points:", error);
+            }
+        }
+
+
         window.addEventListener('app:toggle-style', onToggleStyle, opts)
         window.addEventListener('app:toggle-heat', onToggleHeat, opts)
         window.addEventListener('app:draw-routes', onDrawRoutes, opts)
+        window.addEventListener('app:fit-route-points', onFitRoutePoints, opts) // NEW LISTENER
 
         // NEW: basic camera controls from TopRightControls
         const onZoomIn = () => {
@@ -682,6 +763,22 @@ export default function MapView() {
             } catch (_) {
             }
         }
+
+        const onSetDestination = (e) => {
+            const m = map();
+            if (!m) return
+            const { lng, lat } = e.detail;
+
+            if (!m.__destinationMarker) {
+                // Use a different color/style to distinguish from the route end marker
+                m.__destinationMarker = new mapboxgl.Marker({ color: '#f87171' })
+                    .setLngLat([lng, lat])
+                    .addTo(m);
+            } else {
+                m.__destinationMarker.setLngLat([lng, lat]);
+            }
+        }
+        window.addEventListener('app:set-destination', onSetDestination, opts);
 
         window.addEventListener('app:zoom-in', onZoomIn, opts)
         window.addEventListener('app:zoom-out', onZoomOut, opts)
