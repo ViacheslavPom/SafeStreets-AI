@@ -12,7 +12,100 @@ const HEAT_LAYER_ID = 'risk-heat'
 const HEAT_SOURCE_ID = 'risk-points'
 
 /* ===== Heatmap data cache + helper ===== */
-let __HEAT_GEO_CACHE = null;
+let __HEAT_RAW_CACHE = null;     // raw edges from backend
+let __HEAT_GEO_CACHE = null;     // sampled GeoJSON for current zoom bucket
+let __HEAT_LAST_ZBUCKET = null;  // remember last zoom bucket we rendered
+
+// Decide spacing (meters) based on zoom
+const spacingForZoom = (zoom) => {
+    console.log(zoom);
+    if (zoom >= 16) return 8;     // ~10 m
+    if (zoom >= 15) return 30;     // ~20 m
+    if (zoom >= 14) return 60;     // ~20 m
+    if (zoom >= 12) return 200;     // ~50 m
+    if (zoom >= 10) return 300;    // ~100 m
+    return Infinity;               // single midpoint only
+}
+
+// Bucket zoom into stable bands to reduce resampling churn
+const zoomBucket = (zoom) => {
+    if (zoom >= 16) return 'z16+';
+    if (zoom >= 15) return 'z15';
+    if (zoom >= 14) return 'z14';
+    if (zoom >= 12) return 'z12-13';
+    if (zoom >= 10) return 'z10-11';
+    return 'z<10';
+}
+
+// Build GeoJSON points from backend edges for a given zoom
+function buildHeatGeoJSON(list, zoom) {
+    const feats = [];
+
+    // quick haversine in meters
+    const R = 6371000;
+    const toRad = d => d * Math.PI / 180;
+    const haversine = (lat1, lon1, lat2, lon2) => {
+        const dLat = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1);
+        const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+        return 2 * R * Math.asin(Math.sqrt(a));
+    };
+
+    const step = spacingForZoom(zoom);
+
+    for (const seg of list || []) {
+        if (!seg || !seg.from || !seg.to || seg.from.length < 2 || seg.to.length < 2) continue;
+
+        // incoming order is [lat, lon]; convert + coerce to numbers
+        const fromLat = +seg.from[0], fromLon = +seg.from[1];
+        const toLat   = +seg.to[0],   toLon   = +seg.to[1];
+        if (!isFinite(fromLat) || !isFinite(fromLon) || !isFinite(toLat) || !isFinite(toLon)) continue;
+
+        const risk = Math.max(0, Math.min(1, +seg.risk_score || 0));
+
+        // If zoomed out: single midpoint
+        if (!isFinite(step)) {
+            const midLat = (fromLat + toLat) / 2;
+            const midLon = (fromLon + toLon) / 2;
+            feats.push({
+                type: 'Feature',
+                properties: {mag: risk, risk: risk},
+                geometry: {type: 'Point', coordinates: [midLon, midLat]}
+            });
+            continue;
+        }
+
+        // else sample along the segment based on step
+        let dist = 0;
+        try { dist = haversine(fromLat, fromLon, toLat, toLon) } catch {}
+        let n = Math.max(1, Math.floor(dist / step)); // number of interior points
+        // distribute points along (avoid endpoints to reduce duplicates with neighbors)
+        for (let i = 1; i <= n; i++) {
+            const t = i / (n + 1);
+            const lat = fromLat + (toLat - fromLat) * t;
+            const lon = fromLon + (toLon - fromLon) * t;
+            feats.push({
+                type: 'Feature',
+                properties: {mag: risk, risk: risk},
+                geometry: {type: 'Point', coordinates: [lon, lat]} // [lon,lat]
+            });
+        }
+
+        // Edge shorter than step → still ensure one midpoint
+        if (n === 0) {
+            const midLat = (fromLat + toLat) / 2;
+            const midLon = (fromLon + toLon) / 2;
+            feats.push({
+                type: 'Feature',
+                properties: {mag: risk, risk: risk},
+                geometry: {type: 'Point', coordinates: [midLon, midLat]}
+            });
+        }
+    }
+
+    return {type: 'FeatureCollection', features: feats};
+}
+
 let __HEAT_GEO_LOADING = (async () => {
     const base = import.meta.env.VITE_BACKEND_URL || window.location.origin;
     const url = base.replace(/\/$/, '') + '/heatmap';
@@ -37,31 +130,20 @@ let __HEAT_GEO_LOADING = (async () => {
             throw new Error('Heatmap response is not valid JSON');
         }
     }
-    __HEAT_GEO_CACHE = buildHeatGeoJSON(Array.isArray(data) ? data : []);
-    return __HEAT_GEO_CACHE;
+    // Store RAW edges and defer sampling to current zoom
+    __HEAT_RAW_CACHE = Array.isArray(data) ? data : [];
+    return __HEAT_RAW_CACHE;
 })().catch(err => {
     console.error('Failed to load /heatmap', err);
-    __HEAT_GEO_CACHE = {type: 'FeatureCollection', features: []};
-    return __HEAT_GEO_CACHE;
+    __HEAT_RAW_CACHE = [];
+    return __HEAT_RAW_CACHE;
 });
 
-function buildHeatGeoJSON(list) {
-    // backend returns { coordinates:[lat,lon], risk_score:number in [0,1] }
-    const feats = [];
-    for (const p of list || []) {
-        if (!p || !p.coordinates || p.coordinates.length < 2) continue;
-        const lat = +p.coordinates[0];
-        const lon = +p.coordinates[1];
-        const r = Math.max(0, Math.min(1, +p.risk_score || 0));
-        // GeoJSON requires [lon, lat]
-        feats.push({
-            type: 'Feature',
-            properties: {mag: r, risk: r},
-            geometry: {type: 'Point', coordinates: [lon, lat]}
-        });
-    }
-    return {type: 'FeatureCollection', features: feats};
-}
+/**
+ * Convert backend **lines** to a dense cloud of **points** for Mapbox heatmap.
+ * Backend item: { from:[lat,lon], to:[lat,lon], risk_score:[0..1] }
+ * Output: FeatureCollection of Point features ([lon,lat]), sampled per zoom.
+ */
 
 
 // Strong, explicit heat style so it never “disappears” after style switches
@@ -97,49 +179,37 @@ const HEAT_PAINT = {
     ],
 }
 
-// ensure source exists
+// ensure source exists, and (re)sample for current zoom bucket
 const ensureHeatSource = (map) => {
-    const base = import.meta.env.VITE_BACKEND_URL || window.location.origin;
-    const url = base.replace(/\/$/, '') + '/heatmap';
-
     if (map.getSource(HEAT_SOURCE_ID)) return;
 
     // Add empty source first to avoid race with style changes
     map.addSource(HEAT_SOURCE_ID, {type: 'geojson', data: {type: 'FeatureCollection', features: []}});
 
-    // If cached, set immediately
-    if (__HEAT_GEO_CACHE) {
+    // If we already have RAW edges, sample for current zoom
+    if (__HEAT_RAW_CACHE) {
         try {
+            const zb = zoomBucket(map.getZoom());
+            __HEAT_GEO_CACHE = buildHeatGeoJSON(__HEAT_RAW_CACHE, map.getZoom());
+            __HEAT_LAST_ZBUCKET = zb;
             map.getSource(HEAT_SOURCE_ID).setData(__HEAT_GEO_CACHE)
-        } catch (_) {
-        }
+        } catch (_) {}
         return;
     }
 
-    // Kick off a single fetch once
-    if (!__HEAT_GEO_LOADING) {
-
-        __HEAT_GEO_LOADING = fetch(url, {cache: 'no-store'})
-            .then(r => r.json())
-            .then(list => {
-                __HEAT_GEO_CACHE = buildHeatGeoJSON(list || []);
-                return __HEAT_GEO_CACHE;
-            })
-            .catch(err => {
-                console.error('Failed to load /heatmap', err);
-                __HEAT_GEO_CACHE = {type: 'FeatureCollection', features: []};
-                return __HEAT_GEO_CACHE;
-            });
-    }
-
-    __HEAT_GEO_LOADING.then(geo => {
+    // Otherwise wait for the fetch to complete, then sample for current zoom
+    __HEAT_GEO_LOADING?.then(() => {
         try {
             const s = map.getSource(HEAT_SOURCE_ID);
-            if (s) s.setData(geo);
-        } catch (_) {
-        }
+            if (!s) return;
+            const zb = zoomBucket(map.getZoom());
+            __HEAT_GEO_CACHE = buildHeatGeoJSON(__HEAT_RAW_CACHE, map.getZoom());
+            __HEAT_LAST_ZBUCKET = zb;
+            s.setData(__HEAT_GEO_CACHE);
+        } catch (_) {}
     });
 }
+
 // (re)create or update heat layer, force paint + ordering
 const upsertHeatLayer = (map, visible) => {
     ensureHeatSource(map)
@@ -172,6 +242,18 @@ const upsertHeatLayer = (map, visible) => {
         } catch {
         }
     }
+}
+
+// Resample heat points when zoom bucket changes
+const resampleHeatIfNeeded = (map) => {
+    if (!map || !map.getSource(HEAT_SOURCE_ID) || !__HEAT_RAW_CACHE) return;
+    const zb = zoomBucket(map.getZoom());
+    if (zb === __HEAT_LAST_ZBUCKET && __HEAT_GEO_CACHE) return; // same bucket, keep
+    try {
+        __HEAT_GEO_CACHE = buildHeatGeoJSON(__HEAT_RAW_CACHE, map.getZoom());
+        __HEAT_LAST_ZBUCKET = zb;
+        map.getSource(HEAT_SOURCE_ID).setData(__HEAT_GEO_CACHE);
+    } catch (_) {}
 }
 
 const setHeatVisibility = (map, on) => upsertHeatLayer(map, !!on)
@@ -425,6 +507,10 @@ export default function MapView() {
             recreateCustomLayers(map, map.__heatOn ?? heatRef.current)
         })
 
+        // RESAMPLE HEAT WHEN ZOOM BUCKET CHANGES
+        const onZoomEnd = () => resampleHeatIfNeeded(map);
+        map.on('zoomend', onZoomEnd);
+
         try {
             map.addControl(new mapboxgl.AttributionControl({compact: false}), 'bottom-right');
             map.addControl(new mapboxgl.LogoControl({}), 'bottom-left');
@@ -453,7 +539,10 @@ export default function MapView() {
             document.head.appendChild(style);
         }
 
-        return () => map.remove()
+        return () => {
+            map.off('zoomend', onZoomEnd);
+            map.remove();
+        }
     }, [])
 
     useEffect(() => {
@@ -480,6 +569,8 @@ export default function MapView() {
             // remember on map for any theme-side reassert
             m.__heatOn = heatRef.current
             upsertHeatLayer(m, heatRef.current)
+            // When turning heat on, make sure data matches current zoom bucket
+            if (heatRef.current) resampleHeatIfNeeded(m);
         }
 
         // Route drawing (unchanged)
