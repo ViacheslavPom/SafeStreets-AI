@@ -1,0 +1,555 @@
+
+:root {
+  --panel-bg: rgba(28,28,28,0.9);
+  --panel-border: rgba(255,255,255,0.08);
+  --text: #f5f5f7;
+  --muted: #b6b6c1;
+  --accent: #7ee787;
+}
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; color: var(--text); background: #0b0b0f; }
+.app { position: relative; width: 100%; height: 100%; }
+#map { position: absolute; inset: 0; }
+
+/* Left menu */
+.sidebar { position: absolute; top: 16px; left: 16px; width: 340px; max-height: calc(100% - 32px); background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 12px; backdrop-filter: blur(10px); overflow: hidden; }
+.sidebar .search-wrap { position: relative; }
+.input { width: 100%; height: 40px; border-radius: 10px; border: 1px solid var(--panel-border); background: rgba(255,255,255,0.06); color: var(--text); padding: 0 12px 0 36px; outline: none; }
+.input::placeholder { color: var(--muted); }
+.icon { position: absolute; width: 18px; height: 18px; left: 10px; top: 11px; opacity: .8; }
+.suggestions { position: absolute; top: 44px; left: 0; right: 0; background: rgba(17,17,20,0.98); border: 1px solid var(--panel-border); border-radius: 10px; max-height: 260px; overflow: auto; z-index: 10; }
+.suggestion { padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.06); cursor: pointer; }
+.suggestion:hover { background: rgba(255,255,255,0.06); }
+.section-title { font-size: 12px; letter-spacing: .08em; color: var(--muted); text-transform: uppercase; margin: 4px 0; }
+.list { display: grid; gap: 8px; }
+.list-item { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; background: rgba(255,255,255,0.04); border: 1px solid var(--panel-border); }
+.badge { font-size: 11px; background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 999px; color: var(--muted); }
+.chatbox { margin-top: auto; border-top: 1px solid var(--panel-border); padding-top: 10px; }
+.chat-input { width: 100%; border-radius: 10px; background: rgba(255,255,255,0.06); border: 1px solid var(--panel-border); color: var(--text); padding: 10px 12px; outline: none; }
+
+/* Our right-side stack (avatar + custom controls). We offset to not overlap Mapbox controls. */
+.top-right { position: absolute; top: 16px; right: 74px; display: flex; align-items: center; gap: 10px; z-index: 5; }
+.control-stack { display: grid; gap: 12px; }
+.control { background: var(--panel-bg); border: 1px solid var(--panel-border); width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; cursor: pointer; user-select: none; }
+.control:active { transform: translateY(1px); }
+.avatar { width: 42px; height: 42px; border-radius: 50%; overflow: hidden; border: 2px solid rgba(255,255,255,0.1); display: grid; place-items: center; background: #1f1f28; font-weight: 700; }
+
+/* Bottom-right weather */
+.weather { position: absolute; right: 16px; bottom: 16px; background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 12px; padding: 8px 12px; display: flex; align-items: center; gap: 10px; }
+
+/* --- Mapbox control styling & layout --- */
+.mapboxgl-ctrl-top-right { top: 16px !important; right: 16px !important; display: flex; flex-direction: column; gap: 10px; }
+.mapboxgl-ctrl:not(.mapboxgl-ctrl-attrib):not(.mapboxgl-ctrl-logo), .mapboxgl-ctrl-group { background: var(--panel-bg) !important; border: 1px solid var(--panel-border) !important; border-radius: 12px !important; box-shadow: 0 6px 20px rgba(0,0,0,0.25); overflow: hidden; }
+.mapboxgl-ctrl-group > button { width: 44px !important; height: 44px !important; border: none !important; }
+.mapboxgl-ctrl-compass { width: 44px !important; height: 44px !important; }
+.mapboxgl-ctrl-geolocate { border-radius: 12px !important; }
+.mapboxgl-ctrl button .mapboxgl-ctrl-icon, .mapboxgl-ctrl button svg { filter: invert(0) brightness(1.2); }
+
+@media (max-width: 640px) { .top-right { right: 66px; } }
+
+/* v3: single right column — avatar, map controls group, then custom buttons */
+.top-right { position: absolute; top: 16px; right: 16px; display: grid; gap: 12px; z-index: 5; }
+
+/* Map control group (custom) */
+.map-controls {
+  display: grid;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  padding: 5px;
+  gap: 6px;
+  width: 56px;
+}
+
+.ctrl-btn {
+  width: 44px; height: 44px;
+  display: grid; place-items: center;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.ctrl-btn:active { transform: translateY(1px); }
+
+/* Hide native Mapbox controls (we're replacing them) */
+.mapboxgl-ctrl-top-right { display: none !important; }
+
+/* v4: aligned single column and grouped zoom controls */
+.top-right {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  justify-items: center;   /* center buttons horizontally */
+  gap: 12px;
+  z-index: 5;
+}
+
+.stack-col {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+}
+
+.ctrl-group {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 5px;
+  width: 56px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+}
+
+.ctrl-btn, .control {
+  width: 42px; height: 42px;
+  display: grid; place-items: center;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.ctrl-btn:active, .control:active { transform: translateY(1px); }
+
+/* Compass visuals */
+.compass {
+  width: 42px; height: 42px;
+  border-radius: 50%;
+  position: relative;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--panel-border);
+}
+.compass-needle {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 0; height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 16px solid #f87171; /* red tip */
+  transform-origin: 50% 100%;
+  transform: translate(-50%, -70%) rotate(0deg);
+}
+.compass-center {
+  position:absolute; left:50%; top:50%;
+  transform: translate(-50%,-50%);
+  width: 6px; height: 6px; border-radius: 50%;
+  background:#fff;
+}
+
+/* v6: prevent text selection on right-side controls */
+.top-right, .top-right * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.suggestion { padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.06); cursor: pointer; }
+.sugg-title { font-weight: 700; font-size: 15px; }
+.sugg-sub { font-size: 12px; opacity: .75; margin-top: 2px; }
+
+
+/* Restore Mapbox default feel for attribution & logo */
+.mapboxgl-ctrl-attrib {
+  background: rgba(255,255,255,0.8) !important;
+  color: #000 !important;
+  border-radius: 3px !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  padding: 0 5px !important;
+  line-height: 1.6 !important;
+    display: none !important;
+}
+.mapboxgl-ctrl-attrib a { color: #000 !important; text-decoration: underline; }
+.mapboxgl-ctrl-logo, .mapboxgl-ctrl-logo .mapboxgl-ctrl-logo {
+    display: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+/* Ensure default positions behave as Mapbox expects */
+.mapboxgl-ctrl-bottom-left { left: 0 !important; }
+.mapboxgl-ctrl-bottom-right { right: 0 !important; }
+
+
+
+/* ---- Hackopoly UI theme (Monopoly-inspired) ---- */
+@font-face{
+  font-family: 'Hackopoly';
+  src: url('./assets/MONOPOLY_INLINE.ttf') format('truetype');
+  font-display: swap;
+}
+
+#ui-root.hackopoly-ui {
+  --panel-bg: rgba(252, 247, 236, 0.98);
+  --panel-border: rgba(0,0,0,0.7);
+  --text: #1a1a1a;
+  --muted: #3a3a3a;
+  --accent: #d7263d;
+  --chip-bg: #e9e1cf;
+}
+
+#ui-root.hackopoly-ui .sidebar {
+  background: var(--panel-bg);
+  border: 2px solid var(--panel-border);
+  border-radius: 14px;
+  box-shadow: 0 12px 24px rgba(0,0,0,0.25);
+  color: var(--text);
+}
+
+#ui-root.hackopoly-ui .search-input {
+  background: white;
+  border: 2px solid #000;
+  border-radius: 12px;
+  color: #111;
+  font-family: 'Hackopoly', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+}
+
+#ui-root.hackopoly-ui .section-title {
+  font-family: 'Hackopoly', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+  letter-spacing: .5px;
+  color: #000;
+  background: #92d7f1;
+  border: 2px solid #000;
+  border-radius: 10px;
+  padding: 6px 10px;
+}
+
+#ui-root.hackopoly-ui .row {
+  background: #fff;
+  border: 2px solid #000;
+  border-radius: 12px;
+  color: #111;
+}
+#ui-root.hackopoly-ui .chip {
+  background: var(--chip-bg);
+  border: 2px solid #000;
+  color: #111;
+  border-radius: 999px;
+  font-family: 'Hackopoly', ui-sans-serif, system-ui, -apple-system;
+}
+
+#ui-root.hackopoly-ui .assistant {
+  background: #fff;
+  border: 2px solid #000;
+  border-radius: 14px;
+  color: #111;
+}
+#ui-root.hackopoly-ui .chat-send {
+  background: #d7263d !important;
+  border: 2px solid #000;
+  border-radius: 14px;
+}
+
+#ui-root.hackopoly-ui .top-right .ctrl-group,
+#ui-root.hackopoly-ui .top-right .avatar {
+  background: var(--panel-bg);
+  border: 2px solid var(--panel-border);
+  color: #111;
+  border-radius: 14px;
+}
+#ui-root.hackopoly-ui .top-right .ctrl-btn {
+  background: #fff;
+  border: 2px solid #000;
+  color: #111;
+  border-radius: 12px;
+}
+
+#ui-root.hackopoly-ui .weather {
+  background: var(--panel-bg);
+  border: 2px solid var(--panel-border);
+  color: #111;
+  border-radius: 16px;
+}
+
+#ui-root.hackopoly-ui input::placeholder { color: #6b6b6b; opacity: 1; }
+
+
+/* Specific element class mappings */
+#ui-root.hackopoly-ui .sidebar .input {
+  background: #fff;
+  border: 2px solid #000;
+  border-radius: 12px;
+  color: #111;
+  font-family: 'Hackopoly', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+}
+#ui-root.hackopoly-ui .suggestions .suggestion {
+  background: #fff;
+  border: 2px solid #000;
+  border-radius: 12px;
+  color: #111;
+}
+#ui-root.hackopoly-ui .list .list-item {
+  background: #fff;
+  border: 2px solid #000;
+  border-radius: 12px;
+  color: #111;
+}
+#ui-root.hackopoly-ui .badge {
+  background: var(--chip-bg);
+  border: 2px solid #000;
+  color: #111;
+  border-radius: 999px;
+  font-family: 'Hackopoly', ui-sans-serif, system-ui, -apple-system;
+}
+#ui-root.hackopoly-ui .chat-input-row {
+  background: #fff;
+  border: 2px solid #000;
+  border-radius: 14px;
+  color: #111;
+}
+#ui-root.hackopoly-ui .chat-input { background: transparent; color: #111; }
+
+
+/* --- Hackopoly refinements (square cards, consistent font, no clipping) --- */
+#ui-root.hackopoly-ui {
+  font-family: 'Hackopoly', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+}
+
+/* Make everything square inside hackopoly UI (no radius) */
+#ui-root.hackopoly-ui *, 
+#ui-root.hackopoly-ui *::before, 
+#ui-root.hackopoly-ui *::after {
+  border-radius: 0 !important;
+}
+
+/* Ensure headings / labels all inherit the same font */
+#ui-root.hackopoly-ui .section-title,
+#ui-root.hackopoly-ui .badge,
+#ui-root.hackopoly-ui .input,
+#ui-root.hackopoly-ui .search-input,
+#ui-root.hackopoly-ui .list-item,
+#ui-root.hackopoly-ui .ctrl-btn,
+#ui-root.hackopoly-ui .avatar,
+#ui-root.hackopoly-ui .weather,
+#ui-root.hackopoly-ui .assistant,
+#ui-root.hackopoly-ui .chat-input,
+#ui-root.hackopoly-ui .chat-send {
+  font-family: inherit;
+}
+
+/* Fix chat clipping (allow button to render fully) */
+#ui-root.hackopoly-ui .assistant,
+#ui-root.hackopoly-ui .chat-input-row {
+  overflow: visible;
+}
+
+/* Keep send button edges visible and crisp */
+#ui-root.hackopoly-ui .chat-send {
+  outline: 2px solid #000;
+}
+
+/* Crisp card borders */
+#ui-root.hackopoly-ui .sidebar,
+#ui-root.hackopoly-ui .suggestions .suggestion,
+#ui-root.hackopoly-ui .list .list-item,
+#ui-root.hackopoly-ui .search-input,
+#ui-root.hackopoly-ui .sidebar .input,
+#ui-root.hackopoly-ui .top-right .ctrl-group,
+#ui-root.hackopoly-ui .top-right .avatar,
+#ui-root.hackopoly-ui .weather,
+#ui-root.hackopoly-ui .assistant,
+#ui-root.hackopoly-ui .badge,
+#ui-root.hackopoly-ui .section-title {
+  border-width: 2px;
+  border-style: solid;
+  border-color: #000;
+}
+
+
+/* --- Final Hackopoly touchups (search/assistant text + chatbox fix) --- */
+
+/* Slightly larger placeholder text for search and chat input */
+#ui-root.hackopoly-ui .input::placeholder,
+#ui-root.hackopoly-ui .chat-input::placeholder {
+  font-size: 15px;
+}
+
+/* Make search input text itself slightly larger too */
+#ui-root.hackopoly-ui .input,
+#ui-root.hackopoly-ui .chat-input {
+  font-size: 15px;
+}
+
+/* Fix chatbox layout and clipping */
+#ui-root.hackopoly-ui .chatbox {
+  overflow: visible !important;
+}
+#ui-root.hackopoly-ui .chat-input-row {
+  overflow: visible !important;
+  display: flex;
+  align-items: center;
+}
+#ui-root.hackopoly-ui .chat-input {
+  border: 2px solid #000;
+  background: #fff;
+  color: #111;
+}
+#ui-root.hackopoly-ui .chat-send {
+  border: 2px solid #000 !important;
+  background: #d7263d !important;
+  outline: none !important;
+}
+
+
+/* --- Chatbox final alignment + border consistency --- */
+
+/* Keep assistant section tidy */
+#ui-root.hackopoly-ui .chatbox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 0;
+  border: none;
+}
+
+/* Chat input row unified border box */
+#ui-root.hackopoly-ui .chat-input-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  overflow: visible;
+  border: 2px solid #000;
+  background: #fff;
+  padding: 4px;
+  gap: 4px;
+}
+
+/* Input fits snugly inside shared border */
+#ui-root.hackopoly-ui .chat-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: #111;
+  font-size: 15px;
+  padding: 8px 10px;
+  height: 36px;
+  outline: none;
+}
+
+/* Unified send button style */
+#ui-root.hackopoly-ui .chat-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 36px;
+  border: none !important;
+  background: #d7263d !important;
+  color: #fff;
+  cursor: pointer;
+}
+
+/* Make sure no overlap or clipping happens */
+#ui-root.hackopoly-ui .chatbox,
+#ui-root.hackopoly-ui .chat-input-row,
+#ui-root.hackopoly-ui .assistant {
+  overflow: visible !important;
+}
+
+/* Keep consistent padding bottom overall */
+#ui-root.hackopoly-ui .sidebar {
+  padding-bottom: 14px;
+}
+
+
+/* --- Final polish: spacing, suggestions borders, send button --- */
+
+/* 1) Make bottom visual padding equal to top */
+#ui-root.hackopoly-ui .sidebar {
+  padding-bottom: 24px; /* match top padding visually */
+}
+
+/* 2) Remove double vertical borders on search results list */
+#ui-root.hackopoly-ui .suggestions {
+  border: none !important;
+  background: transparent;
+}
+#ui-root.hackopoly-ui .suggestions .suggestion {
+  border-left: none !important;
+  border-right: none !important;
+}
+#ui-root.hackopoly-ui .suggestions .suggestion + .suggestion {
+  border-top-width: 1px; /* single divider between items */
+}
+
+/* 3) Send button border fix: rely on the row's outer border only */
+#ui-root.hackopoly-ui .chat-send {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+
+/* ===== Hackopoly final fixes: single vertical border for suggestions + centered send button ===== */
+
+/* Suggestions container gets the ONLY vertical borders; items get none on sides */
+#ui-root.hackopoly-ui .sidebar .suggestions {
+  border: 2px solid #000 !important;   /* single outer border */
+  border-top: none !important;          /* sits under search input, avoid double line */
+  background: #fff;
+  padding: 0;
+}
+
+/* Remove vertical borders from each item; keep thin dividers between items */
+#ui-root.hackopoly-ui .sidebar .suggestions .suggestion {
+  border-left: none !important;
+  border-right: none !important;
+  border-top: 1px solid #000;           /* internal divider */
+  border-bottom: none !important;
+}
+#ui-root.hackopoly-ui .sidebar .suggestions .suggestion:first-child {
+  border-top: none !important;
+}
+
+/* Center the send button perfectly inside the shared chat row border */
+#ui-root.hackopoly-ui .chat-input-row {
+  align-items: center;          /* vertical center for both input and button */
+}
+#ui-root.hackopoly-ui .chat-send {
+  height: 100%;                 /* fill the row height */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;                   /* avoid visual offset */
+}
+#ui-root.hackopoly-ui .chat-send svg {
+  display: block;               /* remove extra inline spacing */
+}
+
+
+/* === Hackopoly final tweak: chat input padding + equal suggestion borders === */
+
+/* Chat input: only left padding */
+#ui-root.hackopoly-ui .chat-input {
+  padding-top: 0 !important;
+  padding-right: 0 !important;
+  padding-bottom: 0 !important;
+  padding-left: 10px !important;
+  height: 38px !important;
+  line-height: 38px;
+}
+
+/* Suggestions: consistent equal borders (2px everywhere) */
+#ui-root.hackopoly-ui .sidebar .suggestions {
+  border: 2px solid #000 !important;
+  border-top: none !important;
+  background: #fff;
+}
+#ui-root.hackopoly-ui .sidebar .suggestions .suggestion {
+  border-left: none !important;
+  border-right: none !important;
+  border-top: 2px solid #000 !important;
+  border-bottom: none !important;
+}
+#ui-root.hackopoly-ui .sidebar .suggestions .suggestion:first-child {
+  border-top: 2px solid #000 !important;
+}
+
+
+/* === Final touch: remove padding-top and padding-right from chat-input-row === */
+#ui-root.hackopoly-ui .chat-input-row {
+  padding-top: 0 !important;
+  padding-right: 0 !important;
+}
